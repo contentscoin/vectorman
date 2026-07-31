@@ -13,11 +13,11 @@ concurrency:
 
 env:
   # pnpm treats sharp's unapproved build script as a non-zero exit, which would fail
-  # every `pnpm run`. See the comment in pnpm-workspace.yaml.
+  # every pnpm run. See the comment in pnpm-workspace.yaml.
   CI: 'true'
 
 jobs:
-  # The suites are listed individually rather than run through `verify:all` so a
+  # The suites are listed individually rather than run through verify:all so a
   # failure names the thing that broke instead of just "verification".
   verify:
     name: Engine, MCP and browser verification
@@ -149,13 +149,13 @@ jobs:
     name: Publish the site
     needs: [verify, container]
     # Compared against the repository's actual default branch rather than a hardcoded
-    # name. This repository's branch is `master`, so `refs/heads/main` would have meant
+    # name. This repository's branch is master, so refs/heads/main would have meant
     # the publish never ran, and it would have failed by silently not happening.
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # These have to be job-level. A step's `if` is evaluated before that step's own
-    # `env` is applied, so secrets declared inside the step would read as empty and
+    # These have to be job-level. A step's if is evaluated before that step's own
+    # env is applied, so secrets declared inside the step would read as empty and
     # the publish would be skipped forever.
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -173,8 +173,8 @@ jobs:
           node-version: '24'
           cache: pnpm
 
-      # `vercel build` runs the build here rather than on Vercel's builders, and
-      # `deploy --prebuilt` uploads the result. The bytes that go live are therefore the
+      # vercel build runs the build here rather than on Vercel's builders, and
+      # deploy --prebuilt uploads the result. The bytes that go live are therefore the
       # ones this workflow just verified, and the deployment does not depend on which
       # pnpm version Vercel's image happens to provide.
       - name: Pull project settings
@@ -227,7 +227,7 @@ jobs:
 
       - name: Publish
         if: ${{ env.NODE_AUTH_TOKEN != '' }}
-        # pnpm, not npm: npm leaves `workspace:*` in the manifest and the published
+        # pnpm, not npm: npm leaves workspace:* in the manifest and the published
         # package cannot be installed. verify:package guards this.
         run: |
           pnpm --filter @perfectvector/core publish --access public --no-git-checks
