@@ -39,7 +39,7 @@ pnpm run build:web      # fixtures, measured sample stats, then the Next.js buil
 pnpm run dev:web        # http://localhost:3000
 
 pnpm run fixtures       # regenerate the test artwork
-pnpm run verify:all     # 483 checks across ten suites
+pnpm run verify:all     # 484 checks across ten suites
 ```
 
 `--ignore-scripts` is not optional. Plain `pnpm install` exits non-zero here, and because
@@ -199,13 +199,13 @@ pnpm run verify             # 73 checks — synthetic shapes with known exact an
 pnpm run verify:strokes     # 51 checks — centreline recovery, widths, and the safety rule
 pnpm run verify:real        # 39 checks — realistic fixtures with real AA and JPEG ringing
 pnpm run verify:mcp         # 80 checks — the MCP server over real stdio JSON-RPC
-pnpm run verify:batch       # 52 checks — folder conversion, safety guards, determinism
+pnpm run verify:batch       # 53 checks — folder conversion, safety guards, determinism
 pnpm run verify:web         # 50 checks — headless Chromium driving the built app
 pnpm run verify:web:static  # 59 checks — the same, against the exported artifact
 pnpm run verify:package     # 24 checks — the npm tarballs, installed and driven
 pnpm run verify:vercel      # 34 checks — Vercel's own commands, on a pristine copy
 pnpm run verify:docker      # 21 checks — the container image, driven over stdio
-pnpm run verify:all         # 483 checks
+pnpm run verify:all         # 484 checks
 ```
 
 Synthetic input is the point of the first suite: for a 200px square the outline is exactly 4
