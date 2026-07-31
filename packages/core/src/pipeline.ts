@@ -19,7 +19,13 @@ import { analyzeCorners, cornerThresholdDegrees } from './geom/corners.js';
 import { fitClosedContour, fitOpenPolyline } from './geom/fit.js';
 import { removeCollinear, simplifyClosed, simplifyPolyline } from './geom/simplify.js';
 import { type Polypath, reversePolypath } from './geom/segments.js';
-import { NO_REGION, type Chain, type RegionLoop, tracePlanar } from './trace/planar.js';
+import {
+  NO_REGION,
+  loopSignedArea,
+  type Chain,
+  type RegionLoop,
+  tracePlanar,
+} from './trace/planar.js';
 import {
   scaleStrokePath,
   traceCenterline,
@@ -311,13 +317,16 @@ export function vectorize(image: RasterImage, options: VectorizeOptions = {}): V
     let regionNodes = 0;
 
     for (const loop of loops) {
+      // Derived from the loop's own lattice polygon each time, never cached on it.
+      const signedArea = loopSignedArea(loop);
+
       // Fall back to the exact lattice outline rather than losing the loop. A region
       // in the label map has visible pixels, so it must produce geometry; dropping it
       // because one shared chain failed to fit would make a whole colour layer
       // disappear from the output.
       const contour =
-        assembleContour(loop.chains, loop.signedArea, resolveChain) ??
-        latticeContour(loop, scaleX, scaleY);
+        assembleContour(loop.chains, signedArea, resolveChain) ??
+        latticeContour(loop, signedArea, scaleX, scaleY);
       if (!contour) continue;
       regionNodes += contour.segments.length;
       if (contour.isHole) holes.push(contour);
@@ -580,7 +589,12 @@ function assembleContour(
  * region boundary the tracer found, just unsmoothed — a worse-looking outline than a
  * fitted one, and vastly better than a missing colour layer.
  */
-function latticeContour(loop: RegionLoop, scaleX: number, scaleY: number): Contour | null {
+function latticeContour(
+  loop: RegionLoop,
+  signedArea: number,
+  scaleX: number,
+  scaleY: number
+): Contour | null {
   if (loop.vertices.length < 3) return null;
 
   const scaled = loop.vertices.map((point) => ({ x: point.x * scaleX, y: point.y * scaleY }));
@@ -591,8 +605,8 @@ function latticeContour(loop: RegionLoop, scaleX: number, scaleY: number): Conto
   return {
     start: scaled[0],
     segments,
-    signedArea: loop.signedArea,
-    isHole: loop.isHole,
+    signedArea,
+    isHole: signedArea < 0,
   };
 }
 

@@ -141,9 +141,13 @@ try {
     check('one bad file did not abort the run', structured.converted === 24);
     check('summary lists the failure', /Failed \(1\)/.test(summary));
 
-    // No region may ever be silently discarded: that loses a whole colour layer.
+    // No region may ever be silently discarded: that loses a whole colour layer. And
+    // the invariant guard must not fire either — it firing means a loop's outer/hole
+    // classification was self-inconsistent, which is what the cached-area bug caused.
     const dropped = structured.files.reduce((sum, f) => sum + (f.droppedRegions ?? 0), 0);
+    const repaired = structured.files.reduce((sum, f) => sum + (f.repairedRegions ?? 0), 0);
     check(`no region was discarded (${dropped})`, dropped === 0);
+    check(`no region needed outline repair (${repaired})`, repaired === 0);
 
     check('line art was recovered as centrelines',
       structured.files.some((f) => f.path.includes('lineart') && f.strokes >= 5),

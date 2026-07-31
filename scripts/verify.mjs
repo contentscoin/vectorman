@@ -295,6 +295,49 @@ console.log('\n=== 9. Downscale path keeps output in source coordinates ===');
   check(`geometry scaled back to source space (maxX ${maxX.toFixed(1)} ~ 2500)`, Math.abs(maxX - 2500) < 12);
 }
 
+console.log('\n=== 9b. Nothing is silently discarded or repaired ===');
+{
+  // Both counters must be 0 on every image. A dropped region loses a whole colour
+  // layer; a repaired one means the outer/hole classification was self-inconsistent.
+  // These once fired about 1 conversion in 1000 under worker threads.
+  const images = [];
+
+  const square = raster(200, 200);
+  fillRect(square, 40, 40, 120, 120, [230, 57, 70]);
+  images.push(['square', square]);
+
+  const ring = raster(300, 300);
+  fillDisc(ring, 150, 150, 120, [42, 157, 143]);
+  fillDisc(ring, 150, 150, 60, [0, 0, 0, 0]);
+  images.push(['ring', ring]);
+
+  const nested = raster(320, 320, [255, 255, 255, 255]);
+  fillDisc(nested, 160, 160, 150, [29, 53, 87]);
+  fillDisc(nested, 160, 160, 110, [241, 250, 238]);
+  fillDisc(nested, 160, 160, 70, [230, 57, 70]);
+  fillDisc(nested, 160, 160, 30, [42, 157, 143]);
+  images.push(['4-deep nested rings', nested]);
+
+  const checker = raster(80, 80);
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      fillRect(checker, x * 10, y * 10, 10, 10, (x + y) % 2 === 0 ? [20, 20, 20] : [240, 240, 240]);
+    }
+  }
+  images.push(['checkerboard', checker]);
+
+  for (const [name, image] of images) {
+    for (const strokeMode of ['off', 'auto']) {
+      const result = vectorize(image, { maxColors: 6, background: 'keep', strokeMode });
+      check(
+        `${name} (strokes ${strokeMode}): 0 dropped, 0 repaired`,
+        result.stats.droppedRegions === 0 && result.stats.repairedRegions === 0,
+        `dropped ${result.stats.droppedRegions}, repaired ${result.stats.repairedRegions}`
+      );
+    }
+  }
+}
+
 console.log('\n=== 10. Determinism ===');
 {
   const image = raster(200, 200);

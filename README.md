@@ -39,7 +39,7 @@ pnpm run build:web    # fixtures, measured sample stats, then the Next.js build
 pnpm run dev:web      # http://localhost:3000
 
 pnpm run fixtures     # regenerate the test artwork
-pnpm run verify:all   # 336 checks across five suites
+pnpm run verify:all   # 345 checks across six suites
 ```
 
 ## The engine
@@ -189,13 +189,13 @@ Color layers:
 Nothing here is asserted without being checked. All four suites pass.
 
 ```bash
-pnpm run verify          # 65 checks — synthetic shapes with known exact answers
+pnpm run verify          # 73 checks — synthetic shapes with known exact answers
 pnpm run verify:strokes  # 51 checks — centreline recovery, widths, and the safety rule
 pnpm run verify:real     # 39 checks — realistic fixtures with real AA and JPEG ringing
 pnpm run verify:mcp      # 80 checks — the MCP server over real stdio JSON-RPC
-pnpm run verify:batch    # 51 checks — folder conversion, safety guards, determinism
+pnpm run verify:batch    # 52 checks — folder conversion, safety guards, determinism
 pnpm run verify:web      # 50 checks — headless Chromium driving the built app
-pnpm run verify:all      # 336 checks
+pnpm run verify:all      # 345 checks
 ```
 
 Synthetic input is the point of the first suite: for a 200px square the outline is exactly 4
@@ -231,28 +231,41 @@ The guards matter more than the speed:
 
 ### A bug worth describing
 
-Intermittently — roughly 1 conversion in 500, and only under worker threads — an entire
-colour layer would vanish from the output. Chasing it ruled out a lot: the input bytes,
-the decoded pixels and the resolved settings were identical; 400 in-process repeats and
-280 interleaved conversions were stable; disabling the libvips cache changed nothing;
-and the label map, component list and chain graph were bit-identical across 540 runs.
+Intermittently — roughly 1 conversion in 1000, and only under worker threads — an entire
+colour layer would vanish from the output.
+
+Bisecting it ruled out most of the engine. The input bytes, the decoded pixels and the
+resolved settings were identical. 400 in-process repeats were stable, and so were 280
+interleaved conversions across all fixtures, so it was not JIT tiering on its own.
+Disabling the libvips cache changed nothing. The label map, component list and chain
+graph were bit-identical across 540 runs.
 
 Two real defects surfaced on the way. `stats.nodes` was incremented before a region
-could be discarded, so it described geometry that was never emitted — which is why the
-symptom looked impossible ("a layer disappeared but the node count did not move"). And
-`segments.push(...path.segments)` passes every element as a call argument, which is a
-stack hazard precisely because worker threads get a smaller stack.
+could be discarded, so it counted geometry that was never emitted — which is exactly why
+the symptom read as impossible: *a layer disappeared but the node count did not move*.
+And `segments.push(...path.segments)` passes every element as a call argument, a stack
+hazard made worse by worker threads having a smaller stack than the main thread.
 
-The fix that resolved it was not finding the float that flipped. Every connected region
-has exactly one outer boundary — that is a property of connected sets, not an assumption
-about this code. So when no loop is classified as an outline, the *classification* is
-wrong, and the loop enclosing the most area is promoted instead of the region being
-dropped. `stats.droppedRegions` must always be 0, `stats.repairedRegions` records when
-this fired, and both are asserted. 1125 worker-thread conversions now produce identical
-output, with the repair path firing about once in a thousand.
+The cause turned out to be cached derived state. Each boundary loop stored `signedArea`
+and `isHole` as fields next to its vertex list. Dumping them caught an object whose
+stored area disagreed with the shoelace of its own vertices *and* with its own `isHole`
+flag — two values computed from the same expression, one line apart, disagreeing. No
+assignment to either field exists in the compiled output.
 
-The underlying numeric cause is still unpinned, and the README says so rather than
-implying otherwise. Guaranteeing the invariant was worth more than the diagnosis.
+So the cache is gone. A loop now carries only its lattice polygon, and area and
+hole-ness are derived from it on demand — integer coordinates, so the shoelace is exact
+and cheap. One source of truth cannot contradict itself. Across 1500 worker-thread
+conversions the fault no longer occurs at all.
+
+The invariant guard added while hunting it is kept, because it costs nothing and turns a
+recurrence into a failed assertion: every connected region has exactly one outer
+boundary, so if no loop is classified as an outline the classification is wrong and the
+largest is promoted rather than the region being dropped. `stats.droppedRegions` and
+`stats.repairedRegions` must both be 0, and the suites assert it.
+
+What is still not explained is the mechanism by which a field with no assignment became
+inconsistent. Removing the cache made that question unnecessary rather than answering
+it, and the README says so instead of implying a cleaner story.
 
 ## Limits
 

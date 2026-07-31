@@ -97,18 +97,39 @@ export interface ChainRef {
 
 export interface RegionLoop {
   chains: ChainRef[];
-  /** Exact lattice area. Positive = outer contour, negative = hole. */
-  signedArea: number;
-  isHole: boolean;
   /**
    * The loop's exact lattice polygon, straight runs already collapsed.
    *
-   * Retained as a guaranteed fallback. The normal path assembles a loop from fitted
-   * chains, and if any one of those chains fails to produce geometry the whole loop —
-   * and with it a region that has visible pixels — would be lost. This polygon is
-   * always valid, so the caller can synthesize a contour instead of dropping artwork.
+   * This is the loop's single source of truth. Everything else about it — its area,
+   * whether it is a hole, a fallback contour if chain fitting fails — is derived from
+   * this on demand rather than cached alongside it.
+   *
+   * That is deliberate. An earlier version stored `signedArea` and `isHole` as fields,
+   * and roughly one conversion in a thousand produced an object whose stored area
+   * disagreed with its own vertices *and* with its own `isHole` flag — despite the
+   * compiled code containing no assignment to either field. A region would then look
+   * like it had no outer boundary and an entire colour layer would vanish.
+   *
+   * Rather than keep hunting a discrepancy that should be impossible, the cached
+   * values are gone. The polygon is integer lattice points, so the shoelace over it is
+   * exact and cheap, and one source of truth cannot contradict itself.
    */
   vertices: Point[];
+}
+
+/**
+ * Exact signed area of a loop. Positive = outer contour, negative = hole.
+ *
+ * Computed from the lattice polygon every time it is asked for. The vertices are
+ * integers, so this is exact rather than approximate.
+ */
+export function loopSignedArea(loop: RegionLoop): number {
+  return shoelace(loop.vertices);
+}
+
+/** Is this loop a hole rather than an outer boundary? */
+export function loopIsHole(loop: RegionLoop): boolean {
+  return loopSignedArea(loop) < 0;
 }
 
 export interface PlanarTrace {
@@ -591,9 +612,9 @@ class CrackGraph {
       refs.pop();
     }
 
-    const signedArea = shoelace(vertices);
-    if (Math.abs(signedArea) < 0.5) return null;
+    // Degenerate loops enclose no area and would only produce invisible geometry.
+    if (Math.abs(shoelace(vertices)) < 0.5) return null;
 
-    return { chains: refs, signedArea, isHole: signedArea < 0, vertices };
+    return { chains: refs, vertices };
   }
 }
