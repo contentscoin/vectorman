@@ -32,15 +32,21 @@ landing page displays — so the marketing figures cannot drift from what the co
 Requires Node 20+ and pnpm.
 
 ```bash
-pnpm install
+pnpm run install:deps   # pnpm install --frozen-lockfile --ignore-scripts
 
-pnpm run build        # engine + MCP server
-pnpm run build:web    # fixtures, measured sample stats, then the Next.js build
-pnpm run dev:web      # http://localhost:3000
+pnpm run build          # engine + MCP server
+pnpm run build:web      # fixtures, measured sample stats, then the Next.js build
+pnpm run dev:web        # http://localhost:3000
 
-pnpm run fixtures     # regenerate the test artwork
-pnpm run verify:all   # 345 checks across six suites
+pnpm run fixtures       # regenerate the test artwork
+pnpm run verify:all     # 448 checks across nine suites
 ```
+
+`--ignore-scripts` is not optional. Plain `pnpm install` exits non-zero here, and because
+pnpm runs an install check ahead of `pnpm run`, that exit code takes every other script
+with it. The cause is one dependency build script belonging to a package this project
+never uses; [pnpm-workspace.yaml](pnpm-workspace.yaml) records the full finding and why
+the broader escape hatches were rejected.
 
 ## The engine
 
@@ -186,16 +192,19 @@ Color layers:
 
 ## Verification
 
-Nothing here is asserted without being checked. All four suites pass.
+Nothing here is asserted without being checked. All nine suites pass.
 
 ```bash
-pnpm run verify          # 73 checks — synthetic shapes with known exact answers
-pnpm run verify:strokes  # 51 checks — centreline recovery, widths, and the safety rule
-pnpm run verify:real     # 39 checks — realistic fixtures with real AA and JPEG ringing
-pnpm run verify:mcp      # 80 checks — the MCP server over real stdio JSON-RPC
-pnpm run verify:batch    # 52 checks — folder conversion, safety guards, determinism
-pnpm run verify:web      # 50 checks — headless Chromium driving the built app
-pnpm run verify:all      # 345 checks
+pnpm run verify             # 73 checks — synthetic shapes with known exact answers
+pnpm run verify:strokes     # 51 checks — centreline recovery, widths, and the safety rule
+pnpm run verify:real        # 39 checks — realistic fixtures with real AA and JPEG ringing
+pnpm run verify:mcp         # 80 checks — the MCP server over real stdio JSON-RPC
+pnpm run verify:batch       # 52 checks — folder conversion, safety guards, determinism
+pnpm run verify:web         # 50 checks — headless Chromium driving the built app
+pnpm run verify:web:static  # 58 checks — the same, against the exported artifact
+pnpm run verify:package     # 24 checks — the npm tarballs, installed and driven
+pnpm run verify:docker      # 21 checks — the container image, driven over stdio
+pnpm run verify:all         # 448 checks
 ```
 
 Synthetic input is the point of the first suite: for a 200px square the outline is exactly 4
@@ -266,6 +275,91 @@ largest is promoted rather than the region being dropped. `stats.droppedRegions`
 What is still not explained is the mechanism by which a field with no assignment became
 inconsistent. Removing the cache made that question unnecessary rather than answering
 it, and the README says so instead of implying a cleaner story.
+
+## Deployment
+
+**No live URL was published.** The environment this was built in has no hosting
+credentials and no git remote, so there was nothing to push to and nothing to
+authenticate with. What exists instead is three artifacts that were each built and then
+driven end to end, plus the configuration to publish them. Nothing below is untested
+YAML.
+
+### The site
+
+Conversion runs entirely in the browser, in a Web Worker, so there is no server to
+deploy — the site is static files.
+
+```bash
+pnpm run build:static      # apps/web/out, 1.3 MB
+pnpm run verify:web:static # 58 checks against those exact files
+```
+
+The export is behind `PV_STATIC_EXPORT=1` rather than being the default, so the ordinary
+server build still works if a server feature is ever wanted.
+
+Verifying the artifact rather than the dev server is the point. `verify:web:static`
+serves `apps/web/out` over a plain file server and runs the whole browser suite against
+it: the worker loads, real conversions run, all five download formats come back with the
+right magic bytes, saved presets survive a reload, and `/studio` resolves. Export breaks
+things a `next start` build hides, and serving `.js` as anything other than
+`text/javascript` makes a browser refuse the module worker outright.
+
+That run also serves the headers from [netlify.toml](netlify.toml), which the script
+parses. The deployed Content-Security-Policy is therefore exercised by 58 checks rather
+than hoped about — a policy that blocked the worker or the object URLs used for previews
+and downloads would fail them here.
+
+Publishing is `netlify deploy --dir=apps/web/out --prod`, or Vercel via
+[vercel.json](vercel.json), or `wrangler pages deploy apps/web/out`, or any static host
+at all: copy the directory. The headers exist in Netlify and Vercel form; on another host
+they have to be reproduced, and `trailingSlash` means routes are directories
+(`out/studio/index.html`), which every host handles but a hand-rolled server may not.
+
+### The packages
+
+```bash
+pnpm run pack           # tmp/pack/*.tgz
+pnpm run verify:package # 24 checks
+```
+
+Use `pnpm pack`, never `npm pack`. npm leaves `"@perfectvector/core": "workspace:*"` in
+the published manifest, `workspace:` is a pnpm-only protocol, and no registry can resolve
+it — the tarball installs nowhere and `npx @perfectvector/mcp` fails before it starts.
+pnpm substitutes the real version. `verify:package` asserts that no `workspace:` reference
+survives, then installs both tarballs into a clean directory with npm and drives the
+installed binary over stdio, checking it reproduces the source build's output exactly.
+
+### The container
+
+```bash
+pnpm run verify:docker  # 21 checks, builds the image first
+docker run -i --rm -v "$PWD:/work:z" perfectvector/mcp:0.1.0
+```
+
+272.9 MB, unprivileged, stdio only — no port and no healthcheck, because readiness for an
+MCP server means "answers initialize", which a client establishes on connect. The runtime
+stage installs the packed tarballs rather than copying the build tree, so the image
+contains the same artifact npm would publish; if publishing breaks, this breaks too.
+
+`verify:docker` speaks MCP to a running container, converts an image through a bind mount
+and confirms the SVG lands on the host, checks a photograph is still refused, and checks
+that a read-only mount produces a readable tool error with the session still usable
+rather than a crash. Running unprivileged makes write failures normal, so they are
+tested. Bind mounts need `:z` on SELinux hosts or the container cannot read them at all.
+
+### CI
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs all nine suites on every push,
+then uploads the site, the tarballs and the browser screenshots as artifacts. Publishing
+is wired up and inert: the site job deploys to Netlify or Cloudflare Pages and the package
+job publishes on a `v*` tag, but each skips with an explanation when its token is absent,
+so a missing credential never looks like a broken build. Add `NETLIFY_AUTH_TOKEN` and
+`NETLIFY_SITE_ID`, or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, or `NPM_TOKEN`,
+and the corresponding job starts working with no other change.
+
+Those secrets are declared at job level deliberately. A step's `if:` is evaluated before
+that step's own `env` is applied, so a secret declared inside the step reads as empty and
+the publish is skipped forever — silently, and only in the case that matters.
 
 ## Limits
 

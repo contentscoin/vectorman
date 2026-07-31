@@ -1,0 +1,214 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# A newer push makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # pnpm treats sharp's unapproved build script as a non-zero exit, which would fail
+  # every `pnpm run`. See the comment in pnpm-workspace.yaml.
+  CI: 'true'
+
+jobs:
+  # The suites are listed individually rather than run through `verify:all` so a
+  # failure names the thing that broke instead of just "verification".
+  verify:
+    name: Engine, MCP and browser verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build engine and MCP server
+        run: pnpm run build
+
+      - name: Generate fixtures
+        run: pnpm run fixtures
+
+      - name: Geometry and pipeline
+        run: pnpm run verify
+
+      - name: Stroke and centreline recovery
+        run: pnpm run verify:strokes
+
+      - name: Real-image behaviour
+        run: pnpm run verify:real
+
+      - name: MCP protocol surface
+        run: pnpm run verify:mcp
+
+      - name: Batch conversion and worker pool
+        run: pnpm run verify:batch
+
+      - name: Publishable tarballs
+        run: pnpm run verify:package
+
+      - name: Build the web app
+        run: pnpm run build:web
+
+      - name: Browser end-to-end against the server build
+        # The runner image ships Chrome; downloading another browser would only add
+        # minutes. The script accepts any Chromium via CHROME_PATH.
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: pnpm run verify:web
+
+      - name: Build the static export
+        run: pnpm run build:static
+
+      - name: Browser end-to-end against the deployable artifact
+        # This run also serves the headers from netlify.toml, so the deployed CSP is
+        # exercised rather than assumed.
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: pnpm run verify:web:static
+
+      - name: Upload the deployable site
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-static-export
+          path: apps/web/out
+          if-no-files-found: error
+
+      - name: Upload the npm tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarballs
+          path: tmp/pack/*.tgz
+          if-no-files-found: error
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots
+          path: tmp/screenshots
+          if-no-files-found: ignore
+
+  container:
+    name: MCP server container
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # Only the MCP client SDK is needed to drive the container.
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Generate fixtures
+        run: pnpm run fixtures
+
+      - name: Build the image and speak MCP to it
+        run: pnpm run verify:docker
+
+  # Publishing needs credentials this repository may not have. The job is skipped
+  # rather than failing when they are absent, so the absence of a token never looks
+  # like a broken build.
+  publish-site:
+    name: Publish the site
+    needs: [verify, container]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # These have to be job-level. A step's `if` is evaluated before that step's own
+    # `env` is applied, so secrets declared inside the step would read as empty and
+    # the publish would be skipped forever.
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-static-export
+          path: out
+
+      - name: Netlify
+        id: netlify
+        if: ${{ env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != '' }}
+        run: npx --yes netlify-cli@17 deploy --dir=out --prod --site="$NETLIFY_SITE_ID"
+
+      - name: Cloudflare Pages
+        if: ${{ steps.netlify.outcome == 'skipped' && env.CLOUDFLARE_API_TOKEN != '' }}
+        run: npx --yes wrangler@3 pages deploy out --project-name=perfectvector
+
+      - name: Explain a skipped publish
+        if: ${{ env.NETLIFY_AUTH_TOKEN == '' && env.CLOUDFLARE_API_TOKEN == '' }}
+        run: |
+          echo "No hosting credentials are configured, so nothing was published."
+          echo "The verified site is attached to this run as the web-static-export artifact."
+          echo "Set NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID, or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, to enable publishing."
+
+  # Same reasoning for npm: wired up, inert without a token.
+  publish-packages:
+    name: Publish to npm
+    needs: [verify, container]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level for the same reason as publish-site.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+
+      - name: Publish
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        # pnpm, not npm: npm leaves `workspace:*` in the manifest and the published
+        # package cannot be installed. verify:package guards this.
+        run: |
+          pnpm --filter @perfectvector/core publish --access public --no-git-checks
+          pnpm --filter @perfectvector/mcp publish --access public --no-git-checks

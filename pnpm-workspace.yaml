@@ -2,17 +2,32 @@ packages:
   - 'packages/*'
   - 'apps/*'
 
-# sharp is used directly for image decoding in the MCP server, where its prebuilt
-# platform binaries are what we actually want. Next.js pulls in a second copy of it
-# for image optimisation, which this app does not use.
-#
-# pnpm blocks unapproved postinstall scripts and reports that as a non-zero exit. It
-# also re-runs `install` before every `pnpm run`, so that exit code made every
-# verification script fail before it could start. Naming sharp here settles the
-# question explicitly instead of leaving it as a recurring failure.
-onlyBuiltDependencies:
-  - sharp
-
-# Installing is an explicit step in this repo, so the pre-run freshness check is not
-# wanted either.
+# Installing is an explicit step in this repo, so pnpm's freshness check ahead of every
+# `pnpm run` is not wanted; it turned an unrelated install warning into a failure of
+# whichever script was being run.
 verifyDepsBeforeRun: false
+
+# Dependency build scripts
+# ------------------------
+# Install with `--ignore-scripts`. `pnpm run install:deps` does this, and so do
+# netlify.toml, the Dockerfile and CI.
+#
+# pnpm refuses to run a dependency's build script until the choice is recorded and
+# treats an unrecorded one as a non-zero exit, which fails `pnpm install`. Exactly one
+# package in this tree has such a script, and it is one we have no use for:
+#
+#   sharp 0.35.3  the MCP server's own dependency, used to decode uploads. Declares no
+#                 install script; the native binary arrives as a prebuilt
+#                 platform-specific optional package. Verified working when installed
+#                 with scripts ignored.
+#   sharp 0.34.5  pulled in by Next.js for image optimisation, which this app does not
+#                 use. This is the copy declaring `node install/check.js || npm run
+#                 build`, and the only reason the error appears.
+#
+# `onlyBuiltDependencies: [sharp]` was recorded here previously. On a fresh tree it does
+# not silence the error, by name or as `sharp@0.34.5`; it only appeared to work because
+# an up-to-date tree makes pnpm skip the step entirely and report nothing.
+# `ignoredBuiltDependencies` does not silence it either, and `ignore-scripts=true` in
+# .npmrc is not equivalent to the command-line flag. `dangerouslyAllowAllBuilds: true`
+# does work, and is rejected here: it would let every dependency in the tree run
+# arbitrary code at install time to accommodate one package we do not use.

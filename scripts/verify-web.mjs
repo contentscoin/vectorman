@@ -1,25 +1,38 @@
 /**
  * End-to-end browser verification.
  *
- * Starts the production build, drives it with a real headless Chromium, and checks
- * that a conversion actually happens in the page: the worker loads, the engine
- * runs, the stats appear, the SVG renders, and palette edits change the result.
+ * Drives the built app with a real headless Chromium and checks that a conversion
+ * actually happens in the page: the worker loads, the engine runs, the stats appear,
+ * the SVG renders, and palette edits change the result.
  *
- * The server is started and stopped inside this script because background
- * processes do not survive between shell invocations in the sandbox.
+ * Two targets, selected with `PV_VERIFY_TARGET`:
+ *
+ *   server (default)  `next start` against `.next`
+ *   static            a plain file server over `out/`, i.e. the deployable artifact
+ *
+ * The static target matters because that is what actually ships. Export can break
+ * things the server build hides — a Web Worker loaded from a chunk URL, routes that
+ * exist only as rewrites, or a MIME type a real host would get right and a naive
+ * server would not. Verifying the artifact is the only way to know it works.
+ *
+ * The server is started and stopped inside this script because background processes
+ * do not survive between shell invocations in the sandbox.
  *
  * Run: node scripts/verify-web.mjs
+ *      PV_VERIFY_TARGET=static node scripts/verify-web.mjs
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { extname, join, normalize } from 'node:path';
 import { createRequire } from 'node:module';
 
 const ROOT = join(import.meta.dirname, '..');
 const WEB = join(ROOT, 'apps', 'web');
 const PORT = Number(process.env.PORT ?? 3123);
 const BASE = `http://127.0.0.1:${PORT}`;
+const TARGET = process.env.PV_VERIFY_TARGET === 'static' ? 'static' : 'server';
 const SHOTS = join(ROOT, 'tmp', 'screenshots');
 mkdirSync(SHOTS, { recursive: true });
 
@@ -44,8 +57,25 @@ if (!executablePath) {
   process.exit(1);
 }
 
-if (!existsSync(join(WEB, '.next'))) {
-  console.error('No production build. Run: pnpm --filter @perfectvector/web build');
+const STATIC_ROOT = join(WEB, 'out');
+
+if (TARGET === 'static') {
+  if (!existsSync(STATIC_ROOT)) {
+    console.error('No static export. Run: pnpm run build:static');
+    process.exit(1);
+  }
+} else if (!existsSync(join(WEB, '.next'))) {
+  console.error('No production build. Run: pnpm run build:web');
+  process.exit(1);
+} else if (existsSync(join(WEB, '.next', 'export-detail.json'))) {
+  // Both builds write to .next, so whichever ran last decides what is there. Without
+  // this check `next start` sits and fails on a timeout, which says nothing about the
+  // actual cause.
+  console.error(
+    'apps/web/.next holds a static export, which `next start` cannot serve.\n' +
+      '  For the server target:  pnpm run build:web\n' +
+      '  For the exported files: pnpm run verify:web:static'
+  );
   process.exit(1);
 }
 
@@ -60,15 +90,157 @@ function check(label, condition, detail) {
   }
 }
 
-const server = spawn('node_modules/.bin/next', ['start', '-p', String(PORT)], {
-  cwd: WEB,
-  stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env },
-});
+/**
+ * MIME types for the static target.
+ *
+ * `text/javascript` on `.js` is not cosmetic: a module worker is rejected outright if
+ * the script is served with a non-JavaScript type, so getting this wrong would fail
+ * the conversion tests in a way that looks like an engine bug.
+ */
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+};
 
+/**
+ * Read the `[[headers]]` blocks out of netlify.toml.
+ *
+ * Deployment headers are usually shipped untested, which is how a Content-Security-
+ * Policy that blocks the Web Worker reaches production. Serving the real file here
+ * means the browser suite exercises the policy that will actually be deployed.
+ *
+ * This understands only the shape netlify.toml uses, which is all it needs to.
+ */
+function loadDeployHeaders() {
+  const tomlPath = join(ROOT, 'netlify.toml');
+  if (!existsSync(tomlPath)) return [];
+
+  const blocks = [];
+  let current = null;
+  let inValues = false;
+
+  for (const rawLine of readFileSync(tomlPath, 'utf8').split('\n')) {
+    const line = rawLine.trim();
+    if (line.startsWith('#') || line === '') continue;
+
+    if (line === '[[headers]]') {
+      if (current) blocks.push(current);
+      current = { pattern: null, values: {} };
+      inValues = false;
+      continue;
+    }
+    if (!current) continue;
+
+    if (line === '[headers.values]') {
+      inValues = true;
+      continue;
+    }
+    // A new top-level table ends the block.
+    if (line.startsWith('[') && line !== '[headers.values]') {
+      blocks.push(current);
+      current = null;
+      inValues = false;
+      continue;
+    }
+
+    const match = /^([A-Za-z0-9-]+)\s*=\s*"(.*)"$/.exec(line);
+    if (!match) continue;
+    if (match[1] === 'for' && !inValues) current.pattern = match[2];
+    else if (inValues) current.values[match[1]] = match[2];
+  }
+  if (current) blocks.push(current);
+
+  return blocks.filter((block) => block.pattern);
+}
+
+const DEPLOY_HEADERS = loadDeployHeaders();
+
+/** Netlify path matching, reduced to the two forms this file uses. */
+function headersFor(urlPath) {
+  const merged = {};
+  for (const { pattern, values } of DEPLOY_HEADERS) {
+    const matches = pattern.endsWith('/*')
+      ? urlPath.startsWith(pattern.slice(0, -1))
+      : urlPath === pattern;
+    if (matches) Object.assign(merged, values);
+  }
+  return merged;
+}
+
+/** Resolve a URL path to a file inside `out/`, or null. */
+function resolveStatic(urlPath) {
+  // Reject traversal before touching the filesystem.
+  const decoded = decodeURIComponent(urlPath.split('?')[0]);
+  const safe = normalize(decoded).replace(/^(\.\.[/\\])+/, '');
+  const base = join(STATIC_ROOT, safe);
+
+  const candidates = [base];
+  // The export uses trailingSlash, so a route is a directory containing index.html.
+  // Both `/studio` and `/studio/` must resolve, as they would on a real host.
+  if (!extname(safe)) {
+    candidates.push(join(base, 'index.html'), `${base}.html`);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+}
+
+let server;
 let serverLog = '';
-server.stdout.on('data', (chunk) => (serverLog += chunk));
-server.stderr.on('data', (chunk) => (serverLog += chunk));
+
+if (TARGET === 'static') {
+  server = createServer((request, response) => {
+    const file = resolveStatic(request.url ?? '/');
+    if (!file) {
+      const notFound = join(STATIC_ROOT, '404.html');
+      if (existsSync(notFound)) {
+        response.writeHead(404, { 'content-type': MIME['.html'] });
+        createReadStream(notFound).pipe(response);
+      } else {
+        response.writeHead(404).end('not found');
+      }
+      return;
+    }
+    const urlPath = (request.url ?? '/').split('?')[0];
+    response.writeHead(200, {
+      'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+      // The deployment headers come first so a Cache-Control in netlify.toml wins
+      // over the default; the point is to serve what production will serve.
+      'cache-control': 'no-store',
+      ...headersFor(urlPath),
+    });
+    createReadStream(file).pipe(response);
+  });
+
+  await new Promise((resolve) => server.listen(PORT, '127.0.0.1', resolve));
+} else {
+  server = spawn('node_modules/.bin/next', ['start', '-p', String(PORT)], {
+    cwd: WEB,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+  server.stdout.on('data', (chunk) => (serverLog += chunk));
+  server.stderr.on('data', (chunk) => (serverLog += chunk));
+}
 
 async function waitForServer(timeoutMs = 40_000) {
   const deadline = Date.now() + timeoutMs;
@@ -84,10 +256,49 @@ async function waitForServer(timeoutMs = 40_000) {
   throw new Error(`Server did not start within ${timeoutMs}ms.\n${serverLog}`);
 }
 
+function stopServer() {
+  if (!server) return;
+  if (TARGET === 'static') {
+    server.close();
+    return;
+  }
+  server.kill('SIGTERM');
+  setTimeout(() => server.kill('SIGKILL'), 500);
+}
+
 let browser;
 try {
   await waitForServer();
-  console.log(`Server up on ${BASE}`);
+  console.log(
+    TARGET === 'static'
+      ? `Serving the exported artifact (apps/web/out) on ${BASE}`
+      : `Server build up on ${BASE}`
+  );
+
+  if (TARGET === 'static') {
+    console.log('\n=== 0. Deployment headers from netlify.toml ===');
+    check(`netlify.toml parsed (${DEPLOY_HEADERS.length} header blocks)`, DEPLOY_HEADERS.length >= 3);
+
+    const rootResponse = await fetch(`${BASE}/index.html`);
+    const csp = rootResponse.headers.get('content-security-policy') ?? '';
+    check('a CSP is served', csp.length > 0);
+    check("worker-src permits the engine's worker", csp.includes("worker-src 'self'"));
+    check('blob: URLs are allowed for previews and downloads', csp.includes('blob:'));
+    check("object-src is 'none'", csp.includes("object-src 'none'"));
+    check('nosniff is set', rootResponse.headers.get('x-content-type-options') === 'nosniff');
+    check('HTML is revalidated, not cached', /must-revalidate/.test(rootResponse.headers.get('cache-control') ?? ''));
+
+    // Hashed asset names are only worth having if they are cached forever.
+    const chunk = readFileSync(join(STATIC_ROOT, 'index.html'), 'utf8').match(/\/_next\/static\/[^"']+\.js/)?.[0];
+    if (chunk) {
+      const assetResponse = await fetch(`${BASE}${chunk}`);
+      check(
+        'hashed assets are immutable for a year',
+        /max-age=31536000/.test(assetResponse.headers.get('cache-control') ?? ''),
+        assetResponse.headers.get('cache-control') ?? '(none)'
+      );
+    }
+  }
 
   browser = await chromium.launch({
     executablePath,
@@ -440,12 +651,11 @@ try {
   }
 } finally {
   if (browser) await browser.close();
-  server.kill('SIGTERM');
+  stopServer();
   await new Promise((resolve) => setTimeout(resolve, 500));
-  server.kill('SIGKILL');
 }
 
 console.log(`\n${'='.repeat(60)}`);
-console.log(`${checks - failures}/${checks} checks passed`);
+console.log(`${checks - failures}/${checks} checks passed against the ${TARGET} target`);
 console.log(`Screenshots in ${SHOTS}`);
 process.exit(failures > 0 ? 1 : 0);
