@@ -70,11 +70,13 @@ jobs:
       - name: Build the web app
         run: pnpm run build:web
 
+      - name: Install Chromium
+        # Installed explicitly rather than relying on a browser being present at some
+        # path in the runner image. playwright-core is already a dependency of the web
+        # app, so this pins the browser to the version the tests were written against.
+        run: pnpm --filter @perfectvector/web exec playwright-core install --with-deps chromium
+
       - name: Browser end-to-end against the server build
-        # The runner image ships Chrome; downloading another browser would only add
-        # minutes. The script accepts any Chromium via CHROME_PATH.
-        env:
-          CHROME_PATH: /usr/bin/google-chrome
         run: pnpm run verify:web
 
       - name: Build the static export
@@ -83,8 +85,6 @@ jobs:
       - name: Browser end-to-end against the deployable artifact
         # This run also serves the headers from vercel.json, so the deployed CSP is
         # exercised rather than assumed.
-        env:
-          CHROME_PATH: /usr/bin/google-chrome
         run: pnpm run verify:web:static
 
       - name: Vercel deployment config

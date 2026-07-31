@@ -46,15 +46,21 @@ try {
   process.exit(1);
 }
 
-// Reuse the Chromium already present in the image rather than downloading one.
+// Prefer a Chromium already present in the image rather than downloading one, but do
+// not require a particular path to exist. Falling back to undefined lets playwright-core
+// resolve the browser it installed itself, which is what CI relies on; assuming a path
+// on the runner image would be an assumption about a machine this never runs on.
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
   '/opt/playwright/chromium-1232/chrome-linux64/chrome',
 ];
 const executablePath = CHROME_CANDIDATES.find((p) => p && existsSync(p));
-if (!executablePath) {
-  console.error(`No Chromium found. Set CHROME_PATH. Tried:\n${CHROME_CANDIDATES.join('\n')}`);
-  process.exit(1);
+if (executablePath) {
+  console.log(`Using Chromium at ${executablePath}`);
+} else {
+  // launch() throws naming the install command if nothing is available, which is a
+  // better error than anything invented here.
+  console.log("Using playwright-core's own Chromium (pnpm exec playwright-core install chromium)");
 }
 
 const STATIC_ROOT = join(WEB, 'out');
