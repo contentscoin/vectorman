@@ -148,7 +148,10 @@ jobs:
   publish-site:
     name: Publish the site
     needs: [verify, container]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Compared against the repository's actual default branch rather than a hardcoded
+    # name. This repository's branch is `master`, so `refs/heads/main` would have meant
+    # the publish never ran, and it would have failed by silently not happening.
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # These have to be job-level. A step's `if` is evaluated before that step's own
