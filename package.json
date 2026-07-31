@@ -9,7 +9,9 @@
   "scripts": {
     "build": "pnpm --filter @perfectvector/core build && pnpm --filter @perfectvector/mcp build",
     "build:web": "pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build",
+    "build:static": "pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build:static",
     "build:all": "pnpm run build && pnpm run build:web",
+    "install:deps": "pnpm install --frozen-lockfile --ignore-scripts",
     "dev:web": "pnpm --filter @perfectvector/web dev",
     "mcp": "pnpm --filter @perfectvector/mcp start",
     "fixtures": "node scripts/make-fixtures.mjs && node scripts/make-batch-fixtures.mjs",
@@ -20,17 +22,19 @@
     "verify:mcp": "node scripts/verify-mcp.mjs",
     "verify:batch": "node scripts/make-batch-fixtures.mjs && node scripts/verify-batch.mjs",
     "verify:web": "node scripts/verify-web.mjs",
-    "verify:all": "pnpm run verify && pnpm run verify:strokes && pnpm run verify:real && pnpm run verify:mcp && pnpm run verify:batch && pnpm run verify:web",
-    "typecheck": "pnpm -r typecheck",
+    "verify:web:static": "PV_VERIFY_TARGET=static node scripts/verify-web.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify:vercel": "node scripts/verify-vercel.mjs",
+    "verify:docker": "node scripts/verify-docker.mjs",
+    "docker:build": "docker build -f packages/mcp/Dockerfile -t perfectvector/mcp:0.1.0 .",
+    "pack": "pnpm --filter @perfectvector/core exec pnpm pack --pack-destination ../../tmp/pack && pnpm --filter @perfectvector/mcp exec pnpm pack --pack-destination ../../tmp/pack",
+    "//verify:all": "Builds each web target immediately before verifying it. Both builds write to apps/web/.next, so without a fixed order the server run depends on whichever happened to run last.",
+    "verify:all": "pnpm run verify && pnpm run verify:strokes && pnpm run verify:real && pnpm run verify:mcp && pnpm run verify:batch && pnpm run verify:package && pnpm run build:web && pnpm run verify:web && pnpm run build:static && pnpm run verify:web:static && pnpm run verify:vercel && pnpm run verify:docker",
+    "//typecheck": "The engine is consumed through its built declarations (core's types field points at dist), so both the MCP server and the web app need it compiled before they can be checked. Without this a clean checkout reports the engine's exports as implicitly any, which is what CI hit.",
+    "typecheck": "pnpm --filter @perfectvector/core build && pnpm -r typecheck",
     "clean": "pnpm -r exec rm -rf dist .next node_modules/.cache"
   },
   "devDependencies": {
     "typescript": "^5.6.3"
-  },
-  "pnpm": {
-    "//": "sharp arrives both directly (MCP image decoding) and transitively via Next.js. Without this approval pnpm exits non-zero on every `pnpm run`, which breaks the verification scripts.",
-    "onlyBuiltDependencies": [
-      "sharp"
-    ]
   }
 }

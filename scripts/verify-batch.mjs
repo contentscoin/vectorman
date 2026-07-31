@@ -12,6 +12,7 @@
 
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { availableParallelism } from 'node:os';
 
 const basenameOf = (path) => basename(path);
 import { createRequire } from 'node:module';
@@ -184,7 +185,27 @@ try {
 
     check('both runs converted the same files', serial.converted === parallel.converted,
       `${serial.converted} vs ${parallel.converted}`);
-    check(`parallel run is meaningfully faster (${speedup.toFixed(2)}x)`, speedup > 1.8);
+
+    // Tracing time summed across files, divided by wall clock, is what actually proves
+    // the pool ran them at the same time. A pool that silently serialised would sit at
+    // about 1.0 however many workers it claimed, and unlike a speed ratio this does not
+    // depend on how many cores the machine has.
+    const overlap = parallel.cpuMs / parallel.wallClockMs;
+    check(
+      `work genuinely overlapped (${overlap.toFixed(2)}s of tracing per wall second)`,
+      overlap > 1.5,
+      `${(parallel.cpuMs / 1000).toFixed(2)}s of tracing in ${(parallel.wallClockMs / 1000).toFixed(2)}s`
+    );
+
+    // How much wall clock that saves is a property of the hardware, not of the pool.
+    // Seven workers on two cores cannot reach the ratio eight cores give, so the
+    // threshold follows the machine instead of asserting a number measured elsewhere.
+    const cores = availableParallelism();
+    const required = cores >= 8 ? 1.8 : 1.2;
+    check(
+      `parallel run is faster (${speedup.toFixed(2)}x, ${required}x required on ${cores} cores)`,
+      speedup > required
+    );
 
     // 24 convertible + the photograph. broken.png is not an image, so it fails
     // regardless of the score threshold.

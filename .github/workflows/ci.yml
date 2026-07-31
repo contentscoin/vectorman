@@ -1,0 +1,234 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# A newer push makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # pnpm treats sharp's unapproved build script as a non-zero exit, which would fail
+  # every pnpm run. See the comment in pnpm-workspace.yaml.
+  CI: 'true'
+
+jobs:
+  # The suites are listed individually rather than run through verify:all so a
+  # failure names the thing that broke instead of just "verification".
+  verify:
+    name: Engine, MCP and browser verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build engine and MCP server
+        run: pnpm run build
+
+      - name: Generate fixtures
+        run: pnpm run fixtures
+
+      - name: Geometry and pipeline
+        run: pnpm run verify
+
+      - name: Stroke and centreline recovery
+        run: pnpm run verify:strokes
+
+      - name: Real-image behaviour
+        run: pnpm run verify:real
+
+      - name: MCP protocol surface
+        run: pnpm run verify:mcp
+
+      - name: Batch conversion and worker pool
+        run: pnpm run verify:batch
+
+      - name: Publishable tarballs
+        run: pnpm run verify:package
+
+      - name: Build the web app
+        run: pnpm run build:web
+
+      - name: Install Chromium
+        # Installed explicitly rather than relying on a browser being present at some
+        # path in the runner image. playwright-core is already a dependency of the web
+        # app, so this pins the browser to the version the tests were written against.
+        run: pnpm --filter @perfectvector/web exec playwright-core install --with-deps chromium
+
+      - name: Browser end-to-end against the server build
+        run: pnpm run verify:web
+
+      - name: Build the static export
+        run: pnpm run build:static
+
+      - name: Browser end-to-end against the deployable artifact
+        # This run also serves the headers from vercel.json, so the deployed CSP is
+        # exercised rather than assumed.
+        run: pnpm run verify:web:static
+
+      - name: Vercel deployment config
+        # Runs Vercel's own install and build commands against a pristine copy of the
+        # repository, so a broken deploy config fails here rather than on Vercel.
+        run: pnpm run verify:vercel
+
+      - name: Upload the deployable site
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-static-export
+          path: apps/web/out
+          if-no-files-found: error
+
+      - name: Upload the npm tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarballs
+          path: tmp/pack/*.tgz
+          if-no-files-found: error
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots
+          path: tmp/screenshots
+          if-no-files-found: ignore
+
+  container:
+    name: MCP server container
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # Only the MCP client SDK is needed to drive the container.
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Generate fixtures
+        run: pnpm run fixtures
+
+      - name: Build the image and speak MCP to it
+        run: pnpm run verify:docker
+
+  # Publishing needs credentials this repository may not have. The job is skipped
+  # rather than failing when they are absent, so the absence of a token never looks
+  # like a broken build.
+  publish-site:
+    name: Publish the site
+    needs: [verify, container]
+    # Compared against the repository's actual default branch rather than a hardcoded
+    # name. This repository's branch is master, so refs/heads/main would have meant
+    # the publish never ran, and it would have failed by silently not happening.
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # These have to be job-level. A step's if is evaluated before that step's own
+    # env is applied, so secrets declared inside the step would read as empty and
+    # the publish would be skipped forever.
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      # vercel build runs the build here rather than on Vercel's builders, and
+      # deploy --prebuilt uploads the result. The bytes that go live are therefore the
+      # ones this workflow just verified, and the deployment does not depend on which
+      # pnpm version Vercel's image happens to provide.
+      - name: Pull project settings
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+      - name: Explain a skipped publish
+        if: ${{ env.VERCEL_TOKEN == '' || env.VERCEL_PROJECT_ID == '' }}
+        run: |
+          echo "No Vercel credentials are configured, so nothing was published."
+          echo "The verified site is attached to the verify job as the web-static-export artifact."
+          echo "Set VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to enable publishing."
+
+  # Same reasoning for npm: wired up, inert without a token.
+  publish-packages:
+    name: Publish to npm
+    needs: [verify, container]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level for the same reason as publish-site.
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # --ignore-scripts is required or pnpm exits non-zero over an unapproved
+      # build script in a dependency this project does not use. See the comment
+      # in pnpm-workspace.yaml.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+
+      - name: Publish
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        # pnpm, not npm: npm leaves workspace:* in the manifest and the published
+        # package cannot be installed. verify:package guards this.
+        run: |
+          pnpm --filter @perfectvector/core publish --access public --no-git-checks
+          pnpm --filter @perfectvector/mcp publish --access public --no-git-checks

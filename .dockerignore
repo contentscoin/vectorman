@@ -1,0 +1,14 @@
+# Build outputs are recreated inside the image; copying them in would let a stale
+# local build silently become the shipped one.
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/out
+
+# Fixtures, packed tarballs and screenshots are large and never needed at build time.
+tmp
+
+.git
+.gitignore
+**/*.log
