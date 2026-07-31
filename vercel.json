@@ -1,5 +1,6 @@
 {
-  "buildCommand": "corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm run build:static",
+  "installCommand": "pnpm install --frozen-lockfile --ignore-scripts",
+  "buildCommand": "pnpm run build:static",
   "outputDirectory": "apps/web/out",
   "framework": null,
   "trailingSlash": true,
@@ -23,6 +24,26 @@
     },
     {
       "source": "/samples/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
+    },
+    {
+      "source": "/",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/studio/",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/(.*).html",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/(.*).txt",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
+    },
+    {
+      "source": "/icon.svg",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
     }
   ]

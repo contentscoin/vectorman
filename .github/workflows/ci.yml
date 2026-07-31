@@ -81,11 +81,16 @@ jobs:
         run: pnpm run build:static
 
       - name: Browser end-to-end against the deployable artifact
-        # This run also serves the headers from netlify.toml, so the deployed CSP is
+        # This run also serves the headers from vercel.json, so the deployed CSP is
         # exercised rather than assumed.
         env:
           CHROME_PATH: /usr/bin/google-chrome
         run: pnpm run verify:web:static
+
+      - name: Vercel deployment config
+        # Runs Vercel's own install and build commands against a pristine copy of the
+        # repository, so a broken deploy config fails here rather than on Vercel.
+        run: pnpm run verify:vercel
 
       - name: Upload the deployable site
         uses: actions/upload-artifact@v4
@@ -150,31 +155,43 @@ jobs:
     # `env` is applied, so secrets declared inside the step would read as empty and
     # the publish would be skipped forever.
     env:
-      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
         with:
-          name: web-static-export
-          path: out
+          version: 11.1.2
 
-      - name: Netlify
-        id: netlify
-        if: ${{ env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != '' }}
-        run: npx --yes netlify-cli@17 deploy --dir=out --prod --site="$NETLIFY_SITE_ID"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
 
-      - name: Cloudflare Pages
-        if: ${{ steps.netlify.outcome == 'skipped' && env.CLOUDFLARE_API_TOKEN != '' }}
-        run: npx --yes wrangler@3 pages deploy out --project-name=perfectvector
+      # `vercel build` runs the build here rather than on Vercel's builders, and
+      # `deploy --prebuilt` uploads the result. The bytes that go live are therefore the
+      # ones this workflow just verified, and the deployment does not depend on which
+      # pnpm version Vercel's image happens to provide.
+      - name: Pull project settings
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy
+        if: ${{ env.VERCEL_TOKEN != '' && env.VERCEL_PROJECT_ID != '' }}
+        run: npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
       - name: Explain a skipped publish
-        if: ${{ env.NETLIFY_AUTH_TOKEN == '' && env.CLOUDFLARE_API_TOKEN == '' }}
+        if: ${{ env.VERCEL_TOKEN == '' || env.VERCEL_PROJECT_ID == '' }}
         run: |
-          echo "No hosting credentials are configured, so nothing was published."
-          echo "The verified site is attached to this run as the web-static-export artifact."
-          echo "Set NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID, or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, to enable publishing."
+          echo "No Vercel credentials are configured, so nothing was published."
+          echo "The verified site is attached to the verify job as the web-static-export artifact."
+          echo "Set VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to enable publishing."
 
   # Same reasoning for npm: wired up, inert without a token.
   publish-packages:

@@ -39,7 +39,7 @@ pnpm run build:web      # fixtures, measured sample stats, then the Next.js buil
 pnpm run dev:web        # http://localhost:3000
 
 pnpm run fixtures       # regenerate the test artwork
-pnpm run verify:all     # 448 checks across nine suites
+pnpm run verify:all     # 483 checks across ten suites
 ```
 
 `--ignore-scripts` is not optional. Plain `pnpm install` exits non-zero here, and because
@@ -192,7 +192,7 @@ Color layers:
 
 ## Verification
 
-Nothing here is asserted without being checked. All nine suites pass.
+Nothing here is asserted without being checked. All ten suites pass.
 
 ```bash
 pnpm run verify             # 73 checks — synthetic shapes with known exact answers
@@ -201,10 +201,11 @@ pnpm run verify:real        # 39 checks — realistic fixtures with real AA and 
 pnpm run verify:mcp         # 80 checks — the MCP server over real stdio JSON-RPC
 pnpm run verify:batch       # 52 checks — folder conversion, safety guards, determinism
 pnpm run verify:web         # 50 checks — headless Chromium driving the built app
-pnpm run verify:web:static  # 58 checks — the same, against the exported artifact
+pnpm run verify:web:static  # 59 checks — the same, against the exported artifact
 pnpm run verify:package     # 24 checks — the npm tarballs, installed and driven
+pnpm run verify:vercel      # 34 checks — Vercel's own commands, on a pristine copy
 pnpm run verify:docker      # 21 checks — the container image, driven over stdio
-pnpm run verify:all         # 448 checks
+pnpm run verify:all         # 483 checks
 ```
 
 Synthetic input is the point of the first suite: for a 200px square the outline is exactly 4
@@ -291,7 +292,7 @@ deploy — the site is static files.
 
 ```bash
 pnpm run build:static      # apps/web/out, 1.3 MB
-pnpm run verify:web:static # 58 checks against those exact files
+pnpm run verify:web:static # 59 checks against those exact files
 ```
 
 The export is behind `PV_STATIC_EXPORT=1` rather than being the default, so the ordinary
@@ -304,16 +305,56 @@ right magic bytes, saved presets survive a reload, and `/studio` resolves. Expor
 things a `next start` build hides, and serving `.js` as anything other than
 `text/javascript` makes a browser refuse the module worker outright.
 
-That run also serves the headers from [netlify.toml](netlify.toml), which the script
-parses. The deployed Content-Security-Policy is therefore exercised by 58 checks rather
+That run also serves the headers from [vercel.json](vercel.json), which the script
+parses. The deployed Content-Security-Policy is therefore exercised by 59 checks rather
 than hoped about — a policy that blocked the worker or the object URLs used for previews
 and downloads would fail them here.
 
-Publishing is `netlify deploy --dir=apps/web/out --prod`, or Vercel via
-[vercel.json](vercel.json), or `wrangler pages deploy apps/web/out`, or any static host
-at all: copy the directory. The headers exist in Netlify and Vercel form; on another host
-they have to be reproduced, and `trailingSlash` means routes are directories
-(`out/studio/index.html`), which every host handles but a hand-rolled server may not.
+### Deploying to Vercel
+
+```bash
+pnpm run verify:vercel  # 34 checks
+```
+
+The target is Vercel, configured entirely by [vercel.json](vercel.json). Connect the
+repository and push, or from a checkout:
+
+```bash
+npx vercel pull --yes --environment=production
+npx vercel build --prod
+npx vercel deploy --prebuilt --prod
+```
+
+Building locally and uploading with `--prebuilt` means the bytes that go live are the
+ones that were verified, and the deployment does not depend on which pnpm version
+Vercel's builders happen to provide. CI uses the same three commands.
+
+`installCommand` is pinned to `pnpm install --frozen-lockfile --ignore-scripts`, and
+that is load-bearing. Vercel runs its own install step before the build; left to detect
+one it runs a plain `pnpm install`, which exits non-zero in this repository over a
+dependency build script and fails the deploy before the build starts.
+
+`verify:vercel` checks what can be checked without an account. It runs Vercel's install
+and build commands against a pristine copy of the repository — not this working tree, so
+a stale `node_modules` or leftover build cannot make it pass — then confirms the output
+directory Vercel will serve contains what it should. It validates every top-level key
+against Vercel's published schema, because a misspelled one is ignored silently: the
+deploy succeeds with the setting quietly missing. And it checks each header rule against
+the real file listing, since a rule matching nothing is a rule doing nothing.
+
+Two defects came out of writing those checks. The cache rule for HTML was written for
+`/index.html`, which no visitor requests once `trailingSlash` turns routes into
+directories — it had no effect on `/` or `/studio/`. And the App Router's `.txt` flight
+payloads had no rule at all, though they name build-specific chunk hashes internally, so
+a cached one points a client navigation at chunks from a previous deploy. Cache rules are
+now non-overlapping and cover every served path, which is asserted: no path can receive
+two different `Cache-Control` values, so nothing depends on how Vercel merges rules that
+both match.
+
+Any static host will serve this directory — it is 1.3 MB of files. On one that is not
+Vercel the headers have to be reproduced, and `trailingSlash` means routes are
+directories (`out/studio/index.html`), which every host handles but a hand-rolled server
+may not.
 
 ### The packages
 
@@ -349,13 +390,13 @@ tested. Bind mounts need `:z` on SELinux hosts or the container cannot read them
 
 ### CI
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs all nine suites on every push,
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs all ten suites on every push,
 then uploads the site, the tarballs and the browser screenshots as artifacts. Publishing
-is wired up and inert: the site job deploys to Netlify or Cloudflare Pages and the package
-job publishes on a `v*` tag, but each skips with an explanation when its token is absent,
-so a missing credential never looks like a broken build. Add `NETLIFY_AUTH_TOKEN` and
-`NETLIFY_SITE_ID`, or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, or `NPM_TOKEN`,
-and the corresponding job starts working with no other change.
+is wired up and inert: the site job deploys to Vercel and the package job publishes on a
+`v*` tag, but each skips with an explanation when its token is absent, so a missing
+credential never looks like a broken build. Add `VERCEL_TOKEN`, `VERCEL_ORG_ID` and
+`VERCEL_PROJECT_ID`, or `NPM_TOKEN`, and the corresponding job starts working with no
+other change.
 
 Those secrets are declared at job level deliberately. A step's `if:` is evaluated before
 that step's own `env` is applied, so a secret declared inside the step reads as empty and

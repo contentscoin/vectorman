@@ -10,7 +10,7 @@ verifyDepsBeforeRun: false
 # Dependency build scripts
 # ------------------------
 # Install with `--ignore-scripts`. `pnpm run install:deps` does this, and so do
-# netlify.toml, the Dockerfile and CI.
+# vercel.json, the Dockerfile and CI.
 #
 # pnpm refuses to run a dependency's build script until the choice is recorded and
 # treats an unrecorded one as a non-zero exit, which fails `pnpm install`. Exactly one

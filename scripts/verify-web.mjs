@@ -116,66 +116,47 @@ const MIME = {
 };
 
 /**
- * Read the `[[headers]]` blocks out of netlify.toml.
+ * Read the `headers` rules out of vercel.json.
  *
  * Deployment headers are usually shipped untested, which is how a Content-Security-
  * Policy that blocks the Web Worker reaches production. Serving the real file here
- * means the browser suite exercises the policy that will actually be deployed.
- *
- * This understands only the shape netlify.toml uses, which is all it needs to.
+ * means the browser suite exercises the policy that will actually be deployed, and it
+ * has to be the same file the host reads or the guarantee is worthless.
  */
 function loadDeployHeaders() {
-  const tomlPath = join(ROOT, 'netlify.toml');
-  if (!existsSync(tomlPath)) return [];
+  const configPath = join(ROOT, 'vercel.json');
+  if (!existsSync(configPath)) return [];
 
-  const blocks = [];
-  let current = null;
-  let inValues = false;
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  return (config.headers ?? []).map((rule) => ({
+    pattern: rule.source,
+    regex: sourceToRegExp(rule.source),
+    values: Object.fromEntries(rule.headers.map((h) => [h.key, h.value])),
+  }));
+}
 
-  for (const rawLine of readFileSync(tomlPath, 'utf8').split('\n')) {
-    const line = rawLine.trim();
-    if (line.startsWith('#') || line === '') continue;
-
-    if (line === '[[headers]]') {
-      if (current) blocks.push(current);
-      current = { pattern: null, values: {} };
-      inValues = false;
-      continue;
-    }
-    if (!current) continue;
-
-    if (line === '[headers.values]') {
-      inValues = true;
-      continue;
-    }
-    // A new top-level table ends the block.
-    if (line.startsWith('[') && line !== '[headers.values]') {
-      blocks.push(current);
-      current = null;
-      inValues = false;
-      continue;
-    }
-
-    const match = /^([A-Za-z0-9-]+)\s*=\s*"(.*)"$/.exec(line);
-    if (!match) continue;
-    if (match[1] === 'for' && !inValues) current.pattern = match[2];
-    else if (inValues) current.values[match[1]] = match[2];
-  }
-  if (current) blocks.push(current);
-
-  return blocks.filter((block) => block.pattern);
+/**
+ * Translate a Vercel `source` into a RegExp.
+ *
+ * Vercel uses path-to-regexp. Only the `(.*)` capture form appears here, so the
+ * literal parts are escaped and that token is passed through, which keeps `/(.*).html`
+ * from matching more than it should.
+ */
+function sourceToRegExp(source) {
+  const escaped = source
+    .split('(.*)')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('(.*)');
+  return new RegExp(`^${escaped}$`);
 }
 
 const DEPLOY_HEADERS = loadDeployHeaders();
 
-/** Netlify path matching, reduced to the two forms this file uses. */
+/** Later rules win, matching how Vercel merges overlapping ones. */
 function headersFor(urlPath) {
   const merged = {};
-  for (const { pattern, values } of DEPLOY_HEADERS) {
-    const matches = pattern.endsWith('/*')
-      ? urlPath.startsWith(pattern.slice(0, -1))
-      : urlPath === pattern;
-    if (matches) Object.assign(merged, values);
+  for (const { regex, values } of DEPLOY_HEADERS) {
+    if (regex.test(urlPath)) Object.assign(merged, values);
   }
   return merged;
 }
@@ -223,8 +204,8 @@ if (TARGET === 'static') {
     const urlPath = (request.url ?? '/').split('?')[0];
     response.writeHead(200, {
       'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      // The deployment headers come first so a Cache-Control in netlify.toml wins
-      // over the default; the point is to serve what production will serve.
+      // The deployment headers come last so a Cache-Control from vercel.json wins over
+      // the default; the point is to serve what production will serve.
       'cache-control': 'no-store',
       ...headersFor(urlPath),
     });
@@ -276,17 +257,27 @@ try {
   );
 
   if (TARGET === 'static') {
-    console.log('\n=== 0. Deployment headers from netlify.toml ===');
-    check(`netlify.toml parsed (${DEPLOY_HEADERS.length} header blocks)`, DEPLOY_HEADERS.length >= 3);
+    console.log('\n=== 0. Deployment headers from vercel.json ===');
+    check(`vercel.json parsed (${DEPLOY_HEADERS.length} header rules)`, DEPLOY_HEADERS.length >= 3);
 
-    const rootResponse = await fetch(`${BASE}/index.html`);
+    const rootResponse = await fetch(`${BASE}/`);
     const csp = rootResponse.headers.get('content-security-policy') ?? '';
     check('a CSP is served', csp.length > 0);
     check("worker-src permits the engine's worker", csp.includes("worker-src 'self'"));
     check('blob: URLs are allowed for previews and downloads', csp.includes('blob:'));
     check("object-src is 'none'", csp.includes("object-src 'none'"));
     check('nosniff is set', rootResponse.headers.get('x-content-type-options') === 'nosniff');
-    check('HTML is revalidated, not cached', /must-revalidate/.test(rootResponse.headers.get('cache-control') ?? ''));
+
+    // The routes visitors actually request, which trailingSlash makes directories. A
+    // rule written only for /index.html would look right and do nothing.
+    for (const route of ['/', '/studio/']) {
+      const response = await fetch(`${BASE}${route}`);
+      check(
+        `${route} is revalidated, not cached`,
+        /must-revalidate/.test(response.headers.get('cache-control') ?? ''),
+        response.headers.get('cache-control') ?? '(none)'
+      );
+    }
 
     // Hashed asset names are only worth having if they are cached forever.
     const chunk = readFileSync(join(STATIC_ROOT, 'index.html'), 'utf8').match(/\/_next\/static\/[^"']+\.js/)?.[0];
