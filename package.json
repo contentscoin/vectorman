@@ -1,0 +1,36 @@
+{
+  "name": "perfectvector-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI-assisted raster to clean SVG vectorization service, engine and MCP plugin",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --filter @perfectvector/core build && pnpm --filter @perfectvector/mcp build",
+    "build:web": "pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build",
+    "build:all": "pnpm run build && pnpm run build:web",
+    "dev:web": "pnpm --filter @perfectvector/web dev",
+    "mcp": "pnpm --filter @perfectvector/mcp start",
+    "fixtures": "node scripts/make-fixtures.mjs && node scripts/make-batch-fixtures.mjs",
+    "samples": "node scripts/measure-samples.mjs",
+    "verify": "node scripts/verify.mjs",
+    "verify:strokes": "node scripts/verify-strokes.mjs",
+    "verify:real": "node scripts/verify-real.mjs",
+    "verify:mcp": "node scripts/verify-mcp.mjs",
+    "verify:batch": "node scripts/make-batch-fixtures.mjs && node scripts/verify-batch.mjs",
+    "verify:web": "node scripts/verify-web.mjs",
+    "verify:all": "pnpm run verify && pnpm run verify:strokes && pnpm run verify:real && pnpm run verify:mcp && pnpm run verify:batch && pnpm run verify:web",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r exec rm -rf dist .next node_modules/.cache"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "pnpm": {
+    "//": "sharp arrives both directly (MCP image decoding) and transitively via Next.js. Without this approval pnpm exits non-zero on every `pnpm run`, which breaks the verification scripts.",
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+coverage/
+scratch/
+
+# Generated test artwork, verification output and screenshots. Recreated by
+# `pnpm run fixtures`; nothing here is an input to the build.
+tmp/
+
+# Deliberately NOT ignored, despite being generated:
+#
+#   apps/web/public/samples/*      the sample images the landing page offers
+#   apps/web/src/lib/sample-stats.json   their measured conversion stats
+#
+# Both are produced from tmp/fixtures by `pnpm run samples`, and both are needed by
+# `next build`. Committing them keeps a fresh clone buildable without first
+# generating fixtures, and keeps the figures the landing page prints under review in
+# diffs — if a change makes the tracer worse, it shows up here.

@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-ink-100 antialiased;
+  }
+
+  /* Visible focus for keyboard users without the permanent outline on click. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-ink-950;
+  }
+
+  ::selection {
+    @apply bg-accent/30 text-ink-100;
+  }
+}
+
+@layer components {
+  .section {
+    @apply mx-auto w-full max-w-6xl px-5 sm:px-8;
+  }
+
+  .eyebrow {
+    @apply text-xs font-semibold uppercase tracking-[0.16em] text-accent;
+  }
+
+  .heading-xl {
+    @apply text-4xl font-semibold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl;
+  }
+
+  .heading-lg {
+    @apply text-2xl font-semibold leading-tight tracking-tight sm:text-3xl lg:text-4xl;
+  }
+
+  .body-lg {
+    @apply text-base leading-relaxed text-ink-300 sm:text-lg;
+  }
+
+  .card {
+    @apply rounded-2xl border border-ink-700 bg-ink-900/60 p-5;
+  }
+}
+
+@layer utilities {
+  /* Checkerboard used wherever transparency must be visibly transparent. */
+  .bg-checker {
+    background-image:
+      linear-gradient(45deg, #161d28 25%, transparent 25%),
+      linear-gradient(-45deg, #161d28 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #161d28 75%),
+      linear-gradient(-45deg, transparent 75%, #161d28 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: #0e141d;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,18 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+# sharp is used directly for image decoding in the MCP server, where its prebuilt
+# platform binaries are what we actually want. Next.js pulls in a second copy of it
+# for image optimisation, which this app does not use.
+#
+# pnpm blocks unapproved postinstall scripts and reports that as a non-zero exit. It
+# also re-runs `install` before every `pnpm run`, so that exit code made every
+# verification script fail before it could start. Naming sharp here settles the
+# question explicitly instead of leaving it as a recurring failure.
+onlyBuiltDependencies:
+  - sharp
+
+# Installing is an explicit step in this repo, so the pre-run freshness check is not
+# wanted either.
+verifyDepsBeforeRun: false
