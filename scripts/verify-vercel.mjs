@@ -125,13 +125,25 @@ console.log('\n=== 3. Vercel\'s commands, run against a pristine copy ===');
 rmSync(SIM, { recursive: true, force: true });
 mkdirSync(SIM, { recursive: true });
 
-// Copying rather than reusing this tree is the point: it proves the deployment does not
-// depend on build output or node_modules that happen to be lying around.
-execSync(
-  'tar -cf - --exclude=node_modules --exclude=./tmp --exclude=.next --exclude=out --exclude=.git . | ' +
-    `(cd ${JSON.stringify(SIM)} && tar -xf -)`,
-  { cwd: ROOT, shell: '/bin/bash', stdio: 'inherit' }
-);
+// `git archive` gives exactly the tracked files at HEAD, which is what the host clones.
+// An earlier version of this used tar with an exclude list and forgot packages/core/dist,
+// so the working tree's compiled engine was copied in and a build that could never have
+// worked on a fresh clone passed here. Asking git what it tracks removes the chance to
+// forget something.
+if (execSync('git status --porcelain', { cwd: ROOT, encoding: 'utf8' }).trim()) {
+  console.log('  ! working tree is dirty; HEAD is what gets tested, as on the host');
+}
+execSync(`git archive HEAD | (cd ${JSON.stringify(SIM)} && tar -xf -)`, {
+  cwd: ROOT,
+  shell: '/bin/bash',
+  stdio: 'inherit',
+});
+
+// Asserted rather than assumed, so this harness cannot quietly regress into testing
+// leftovers again.
+for (const leftover of ['node_modules', 'packages/core/dist', 'apps/web/.next', 'apps/web/out']) {
+  check(`the copy has no ${leftover}`, !existsSync(join(SIM, leftover)));
+}
 
 const outputDirectory = join(SIM, config.outputDirectory);
 let built = false;

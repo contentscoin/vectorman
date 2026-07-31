@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build",
-    "build:static": "PV_STATIC_EXPORT=1 next build",
+    "//build": "The engine is a workspace dependency resolved through its main field, which points at dist. Webpack cannot resolve it from a fresh clone until it is compiled, so both builds compile it first. This lives here rather than only in the root scripts because a host may invoke this package's build directly, which is what Vercel does.",
+    "build": "pnpm --filter @perfectvector/core build && next build",
+    "build:static": "pnpm --filter @perfectvector/core build && PV_STATIC_EXPORT=1 next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit"
   },
