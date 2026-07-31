@@ -39,7 +39,7 @@ pnpm run build:web      # fixtures, measured sample stats, then the Next.js buil
 pnpm run dev:web        # http://localhost:3000
 
 pnpm run fixtures       # regenerate the test artwork
-pnpm run verify:all     # 484 checks across ten suites
+pnpm run verify:all     # 488 checks across ten suites
 ```
 
 `--ignore-scripts` is not optional. Plain `pnpm install` exits non-zero here, and because
@@ -203,9 +203,9 @@ pnpm run verify:batch       # 53 checks — folder conversion, safety guards, de
 pnpm run verify:web         # 50 checks — headless Chromium driving the built app
 pnpm run verify:web:static  # 59 checks — the same, against the exported artifact
 pnpm run verify:package     # 24 checks — the npm tarballs, installed and driven
-pnpm run verify:vercel      # 34 checks — Vercel's own commands, on a pristine copy
+pnpm run verify:vercel      # 38 checks — Vercel's own commands, on a pristine copy
 pnpm run verify:docker      # 21 checks — the container image, driven over stdio
-pnpm run verify:all         # 484 checks
+pnpm run verify:all         # 488 checks
 ```
 
 Synthetic input is the point of the first suite: for a 200px square the outline is exactly 4
@@ -313,7 +313,7 @@ and downloads would fail them here.
 ### Deploying to Vercel
 
 ```bash
-pnpm run verify:vercel  # 34 checks
+pnpm run verify:vercel  # 38 checks
 ```
 
 The target is Vercel, configured entirely by [vercel.json](vercel.json). Connect the
@@ -335,9 +335,14 @@ one it runs a plain `pnpm install`, which exits non-zero in this repository over
 dependency build script and fails the deploy before the build starts.
 
 `verify:vercel` checks what can be checked without an account. It runs Vercel's install
-and build commands against a pristine copy of the repository — not this working tree, so
-a stale `node_modules` or leftover build cannot make it pass — then confirms the output
-directory Vercel will serve contains what it should. It validates every top-level key
+and build commands against a copy built with `git archive HEAD` — the tracked files at a
+commit, which is what a host clones — then confirms the output directory Vercel will
+serve contains what it should.
+
+That copy used to be made with an exclude list that omitted the engine's `dist`, so the
+working tree's compiled engine was copied in and a build that could never work on a fresh
+clone passed. It asserts the absence of `node_modules`, the engine's `dist`, `.next` and
+`out` now, because the check is only worth anything if the tree really is clean. It validates every top-level key
 against Vercel's published schema, because a misspelled one is ignored silently: the
 deploy succeeds with the setting quietly missing. And it checks each header rule against
 the real file listing, since a rule matching nothing is a rule doing nothing.

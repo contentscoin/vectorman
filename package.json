@@ -8,8 +8,9 @@
   },
   "scripts": {
     "build": "pnpm --filter @perfectvector/core build && pnpm --filter @perfectvector/mcp build",
-    "build:web": "pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build",
-    "build:static": "pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build:static",
+    "//build:web": "The engine comes first because the fixture and sample-measuring scripts import it, and it is consumed through dist. Compiling it here as well as in the web package covers both entry points: this script, and a host that invokes the web package's build directly.",
+    "build:web": "pnpm --filter @perfectvector/core build && pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build",
+    "build:static": "pnpm --filter @perfectvector/core build && pnpm run fixtures && pnpm run samples && pnpm --filter @perfectvector/web build:static",
     "build:all": "pnpm run build && pnpm run build:web",
     "install:deps": "pnpm install --frozen-lockfile --ignore-scripts",
     "dev:web": "pnpm --filter @perfectvector/web dev",
